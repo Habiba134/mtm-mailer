@@ -1,0 +1,37 @@
+name: SBP Mark-to-Market Pipeline
+
+on:
+  schedule:
+    # Trigger at 4:00 PM PKT = 11:00 UTC, Monday-Friday.
+    # main.py polls internally every 10 min until 7:00 PM PKT, so ONE
+    # trigger per day is enough.
+    - cron: '0 10 * * 1-5'
+  workflow_dispatch: # lets you manually click "Run workflow" to test
+
+jobs:
+  run-pipeline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240  # safety cap, well above the ~3hr poll window
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run SBP Mark-to-Market pipeline
+        env:
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          EMAIL_FROM: ${{ secrets.EMAIL_FROM }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          ADMIN_EMAIL: ${{ secrets.ADMIN_EMAIL }}
+        run: python main.py
