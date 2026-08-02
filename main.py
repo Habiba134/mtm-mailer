@@ -246,35 +246,78 @@ def validate_pdf_internal_date(pdf_bytes: bytes, today_pkt: date) -> bool:
         return False
 
 
-def generate_html_table(table: list[list[str]]) -> str:
-    html = []
-    html.append('<table style="width: 100%; border-collapse: collapse; font-family: Arial, sans-serif; margin-top: 15px; border: 1px solid #e2e8f0;">')
+# ─────────────────────────────────────────────────────────────────────
+# TABLE EXTRACTION (SIMPLE VERSION — plain table, no heavy styling)
+# ─────────────────────────────────────────────────────────────────────
+# SBP's PDF has NO table borders/lines - it's plain whitespace-aligned
+# text (e.g. "USD 277.8036 278.2260 278.7757 ..."). pdfplumber's
+# extract_tables() can't detect borderless tables, so we parse the raw
+# text line-by-line instead: a data row = a short currency code (2-4
+# uppercase letters) followed only by numbers. The header row is
+# whatever line starts with "CURRENCY".
+
+def is_number(token: str) -> bool:
+    try:
+        float(token)
+        return True
+    except ValueError:
+        return False
+
+
+def extract_table_from_text(text: str):
+    header = None
+    rows = []
+
+    for line in text.split("\n"):
+        tokens = line.strip().split()
+        if not tokens:
+            continue
+
+        if tokens[0].upper() == "CURRENCY":
+            header = tokens
+            continue
+
+        first = tokens[0]
+        rest = tokens[1:]
+        if (
+            2 <= len(first) <= 4
+            and first.isalpha()
+            and first.isupper()
+            and len(rest) >= 2
+            and all(is_number(t) for t in rest)
+        ):
+            rows.append(tokens)
+
+    if not rows:
+        return None
+
+    if not header:
+        max_len = max(len(r) for r in rows)
+        header = ["CURRENCY"] + [f"COL{i}" for i in range(1, max_len)]
+
+    return [header] + rows
+
+
+def generate_html_table(table) -> str:
+    """Simple plain HTML table - no inline styling, just borders."""
     headers = table[0]
-    html.append('  <thead>')
-    html.append('    <tr style="background-color: #1a365d; border-bottom: 2px solid #e2e8f0;">')
-    for idx, header in enumerate(headers):
-        align = "left" if idx == 0 else "right"
-        val = str(header).strip()
-        html.append(f'      <th style="padding: 12px 15px; text-align: {align}; font-weight: bold; color: #ffffff; font-size: 14px; border: 1px solid #edf2f7;">{val}</th>')
-    html.append('    </tr>')
-    html.append('  </thead>')
-    html.append('  <tbody>')
-    for row_idx, row in enumerate(table[1:]):
+    html = ["<table border='1' cellpadding='5' cellspacing='0'>"]
+
+    html.append("<tr>")
+    for h in headers:
+        html.append(f"<th>{str(h).strip()}</th>")
+    html.append("</tr>")
+
+    for row in table[1:]:
         if not row or len(row) < len(headers):
             continue
-        bg_color = "#f7fafc" if row_idx % 2 == 1 else "#ffffff"
-        html.append(f'    <tr style="background-color: {bg_color};">')
-        for idx, col in enumerate(row[:len(headers)]):
-            align = "left" if idx == 0 else "right"
-            val = str(col).strip()
-            if idx == 0:
-                html.append(f'      <td style="padding: 10px 15px; text-align: {align}; color: #2d3748; font-weight: bold; border: 1px solid #edf2f7; font-size: 14px;">{val}</td>')
-            else:
-                html.append(f'      <td style="padding: 10px 15px; text-align: {align}; color: #4a5568; border: 1px solid #edf2f7; font-size: 14px;">{val}</td>')
-        html.append('    </tr>')
-    html.append('  </tbody>')
-    html.append('</table>')
-    return "\n".join(html)
+        html.append("<tr>")
+        for cell in row[:len(headers)]:
+            html.append(f"<td>{str(cell).strip()}</td>")
+        html.append("</tr>")
+
+    html.append("</table>")
+    return "".join(html)
 
 
 def extract_table_from_pdf(pdf_bytes: bytes) -> str:
@@ -282,35 +325,23 @@ def extract_table_from_pdf(pdf_bytes: bytes) -> str:
         pdf_file = io.BytesIO(pdf_bytes)
         with pdfplumber.open(pdf_file) as pdf:
             if not pdf.pages:
-                return "<p style='color: red;'>Error: PDF contains no pages.</p>"
+                return "<p>Error: PDF contains no pages.</p>"
 
             first_page = pdf.pages[0]
-            tables = first_page.extract_tables()
-            if tables:
-                return generate_html_table(tables[0])
+            full_text = first_page.extract_text() or ""
 
-            text = first_page.extract_text() or ""
-            rows = []
-            for line in text.split("\n"):
-                parts = line.strip().split()
-                if len(parts) >= 3 and len(parts[0]) == 3 and parts[0].isalpha() and parts[0].isupper():
-                    try:
-                        float(parts[1])
-                        float(parts[2])
-                        rows.append([parts[0], parts[1], parts[2]])
-                    except ValueError:
-                        continue
-            if rows:
-                table = [["CURRENCY", "BUYING", "SELLING"]] + rows
+            table = extract_table_from_text(full_text)
+            if table:
                 return generate_html_table(table)
 
-            return "<p style='color: orange;'>Warning: Could not extract currency table structure from PDF.</p>"
+            return "<p>Rates table details are attached in the PDF file below.</p>"
     except Exception as exc:
         log.error("Failed to extract data table from PDF: %s", exc)
-        return f"<p style='color: red;'>Error parsing PDF content: {exc}</p>"
+        return f"<p>Error parsing PDF content: {exc}</p>"
 
+# ─────────────────────────────────────────────────────────────────────
 
-def fetch_and_validate(today_pkt: date) -> Optional[tuple[bytes, str, str]]:
+def fetch_and_validate(today_pkt: date):
     log.info("Initiating scrape attempt for target date: %s", today_pkt)
 
     html_content = ""
